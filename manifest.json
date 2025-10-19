@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GIC</title>
+  <link rel="icon" type="image/x-icon" href="GIC.ico">
+
+  <!-- Leaflet -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <!-- XLSX -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    #map { height: 500px; margin-top: 15px; border-radius: 10px; }
+    select, label, button { margin: 8px 5px; }
+    #errorBox { color: red; font-weight: bold; margin-top: 10px; }
+    #controls {
+      background: #f5f5f5; padding: 10px; border-radius: 8px;
+      box-shadow: 0 0 5px rgba(0,0,0,0.1);
+    }
+  </style>
+</head>
+<body>
+  <h2>Geothermal Instrument Checker Map</h2>
+
+  <div id="controls">
+    <input type="file" id="excelFile" accept=".xlsx,.xls" /><br>
+
+    <div id="columnSelector" style="display:none;">
+      <label>Longitude (X):</label>
+      <select id="lonColumn"></select>
+
+      <label>Latitude (Y):</label>
+      <select id="latColumn"></select>
+
+      <label>Nama:</label>
+      <select id="nameColumn"></select><br>
+    </div>
+
+    <label>Basemap:</label>
+    <select id="basemap">
+      <option value="osm">OpenStreetMap</option>
+      <option value="google">Google Satellite</option>
+      <option value="esri">Esri Topo</option>
+    </select>
+
+    <label>Bentuk Simbol:</label>
+    <select id="symbolType">
+      <option value="red">🔴 Merah (Default)</option>
+      <option value="green">🟢 Hijau</option>
+      <option value="blue">🔵 Biru</option>
+      <option value="loli">📍 Loli</option>
+      <option value="custom">🖼️ Gambar Custom (.png)</option>
+    </select>
+
+    <input type="file" id="customIcon" accept=".png,.jpg,.jpeg" style="display:none;" />
+    <button id="btnTampilkan">Tampilkan Titik</button>
+
+    <div id="errorBox"></div>
+  </div>
+
+  <div id="map"></div>
+
+  <script>
+    let map = L.map("map").setView([-2.5, 118], 5);
+    let baseLayer;
+    let layerGroup = L.layerGroup().addTo(map);
+    let excelData = [];
+    let customIconUrl = null;
+
+    // === BASMAP SETUP ===
+    function setBasemap(type) {
+      if (baseLayer) map.removeLayer(baseLayer);
+      if (type === "google") {
+        baseLayer = L.tileLayer(
+          "https://{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}",
+          { subdomains: ["mt0","mt1","mt2","mt3"], attribution: "Google Satellite" }
+        ).addTo(map);
+      } else if (type === "esri") {
+        baseLayer = L.tileLayer(
+          "https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}",
+          { attribution: "Esri" }
+        ).addTo(map);
+      } else {
+        baseLayer = L.tileLayer(
+          "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+          { attribution: "© OpenStreetMap contributors" }
+        ).addTo(map);
+      }
+    }
+    setBasemap("osm");
+    document.getElementById("basemap").addEventListener("change", e => setBasemap(e.target.value));
+
+    // === UPLOAD EXCEL ===
+    document.getElementById("excelFile").addEventListener("change", e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = evt => {
+        const data = new Uint8Array(evt.target.result);
+        const workbook = XLSX.read(data, { type: "array" });
+        const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+        excelData = XLSX.utils.sheet_to_json(firstSheet);
+        if (!excelData.length) return showError("File kosong atau tidak valid.");
+
+        const columns = Object.keys(excelData[0]);
+        fillColumnSelectors(columns);
+        hideError();
+      };
+      reader.readAsArrayBuffer(file);
+    });
+
+    // === ISI DROPDOWN KOLOM ===
+    function fillColumnSelectors(columns) {
+      const lonSel = document.getElementById("lonColumn");
+      const latSel = document.getElementById("latColumn");
+      const nameSel = document.getElementById("nameColumn");
+      const selectorDiv = document.getElementById("columnSelector");
+
+      lonSel.innerHTML = "";
+      latSel.innerHTML = "";
+      nameSel.innerHTML = "";
+
+      columns.forEach(col => {
+        lonSel.add(new Option(col, col));
+        latSel.add(new Option(col, col));
+        nameSel.add(new Option(col, col));
+      });
+
+      selectorDiv.style.display = "block";
+      autoDetectColumns(columns);
+    }
+
+    function autoDetectColumns(cols) {
+      const latSel = document.getElementById("latColumn");
+      const lonSel = document.getElementById("lonColumn");
+      const nameSel = document.getElementById("nameColumn");
+
+      cols.forEach(c => {
+        const cl = c.toLowerCase();
+        if (cl.includes("lat")) latSel.value = c;
+        if (cl.includes("lon") || cl.includes("lng") || cl.includes("x")) lonSel.value = c;
+        if (cl.includes("nama") || cl.includes("name")) nameSel.value = c;
+      });
+    }
+
+    // === SIMBOL PILIHAN ===
+    document.getElementById("symbolType").addEventListener("change", e => {
+      const val = e.target.value;
+      const iconInput = document.getElementById("customIcon");
+      iconInput.style.display = (val === "custom") ? "inline-block" : "none";
+    });
+
+    document.getElementById("customIcon").addEventListener("change", e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = evt => { customIconUrl = evt.target.result; };
+      reader.readAsDataURL(file);
+    });
+
+    // === TAMPILKAN TITIK ===
+    document.getElementById("btnTampilkan").addEventListener("click", plotData);
+
+    function plotData() {
+      layerGroup.clearLayers();
+      hideError();
+
+      const lonCol = document.getElementById("lonColumn").value;
+      const latCol = document.getElementById("latColumn").value;
+      const nameCol = document.getElementById("nameColumn").value;
+      const symbolType = document.getElementById("symbolType").value;
+
+      if (!lonCol || !latCol) return showError("Pilih kolom longitude dan latitude!");
+
+      let bounds = [];
+      let added = 0;
+
+      excelData.forEach((row, i) => {
+        const lon = parseFloat(row[lonCol]);
+        const lat = parseFloat(row[latCol]);
+        const name = row[nameCol] || `Titik ${i + 1}`;
+        if (isNaN(lat) || isNaN(lon)) return;
+
+        const icon = getMarkerIcon(symbolType);
+        const marker = L.marker([lat, lon], { icon })
+          .bindPopup(`<b>${name}</b><br>${latCol}: ${lat}<br>${lonCol}: ${lon}`);
+        layerGroup.addLayer(marker);
+        bounds.push([lat, lon]);
+        added++;
+      });
+
+      if (added === 0) return showError("Tidak ada titik valid di data Anda.");
+      map.fitBounds(bounds);
+    }
+
+    function getMarkerIcon(type) {
+      if (type === "custom" && customIconUrl) {
+        return L.icon({ iconUrl: customIconUrl, iconSize: [10, 10], iconAnchor: [16, 32] });
+      }
+      if (type === "green") return L.icon({ iconUrl: "https://maps.google.com/mapfiles/ms/icons/green-dot.png" });
+      if (type === "blue") return L.icon({ iconUrl: "https://maps.google.com/mapfiles/ms/icons/blue-dot.png" });
+      if (type === "loli") return L.divIcon({ className: "loli-icon", html: "📍", iconSize: [25, 25], iconAnchor: [25, 25] });
+      // default merah
+      return L.icon({ iconUrl: "https://maps.google.com/mapfiles/ms/icons/red-dot.png" });
+    }
+
+    function showError(msg) {
+      document.getElementById("errorBox").innerText = msg;
+    }
+    function hideError() {
+      document.getElementById("errorBox").innerText = "";
+    }
+  </script>
+</body>
+</html>
